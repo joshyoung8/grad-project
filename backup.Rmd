@@ -1,0 +1,362 @@
+---
+title: "Imputation"
+author: Josh Young
+abstract: "This document provides an introduction to R Markdown, argues for its..."
+keywords: "pandoc, r markdown, knitr"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: 
+  pdf_document:
+    keep_tex: true
+    fig_caption: true
+    toc: true
+    number_sections: true
+    includes:
+      #in_header: header.tex
+      #before_body: before_body.tex
+      #after_body: after_body.tex
+keep_tex: true
+documentclass: article
+fontsize: 11pt
+fontfamily: mathpazo
+# spacing: double
+fig_width: 7
+fig_height: 5
+geometry: margin=1in
+header-includes:
+  - \usepackage{graphicx}
+  - \usepackage{hyperref}
+  - \usepackage{verbatim}
+  - \usepackage{wasysym}
+  - \usepackage{natbib}
+  - \usepackage{setspace}
+  - \doublespacing
+bibliography: citations.bib
+bibliographystyle: agsm
+---
+
+\pagenumbering{roman}
+
+\newpage
+\pagenumbering{arabic}
+
+
+```{r, echo = FALSE, include = FALSE}
+#libraries
+library(scales)
+library(randomForest)
+library(mice)
+library(knitr)
+library(pander)
+library(RColorBrewer)
+library(dplyr)
+library(lattice)
+library(RColorBrewer)
+library(kfigr)
+```
+# Introduction
+
+## Classification
+Classification is when we use a training set to make predictions when our response variable is qualitative [@st_learn, 22]. In classification we use a training set of observations $(x_1, y_1)...(x_n, y_n)$ to make a classifier. This is similar to the linear regression method, except instead of having the response be quantitative, it is qualitative. An example of a qualitative response would be looking at whether or not someone has a disease. Linear regression on this example would not make sense because the response is yes or no.
+  
+There are many different methods that deal with classification to make classifiers in different ways. These methods include logistic regression, linear discriminant analysis, K-nearest neighbors, trees, random forests, and boosting.
+
+## Trees
+Tree based methods for classification include splitting up the predictor space into a number of simple regions. For classification trees we predict that each observation belongs to the most commonly occurring class. With classification trees we are interested in a couple things. We want to know the prediction that corresponds with the terminal node region, as well as the proportions among our training set that fall within that region.  
+
+To grow a classification tree, recursive binary splitting is used. This means that we look at all possible splits based on where we have already split. We do not look at what might be the best split for something further along in our tree. To decide where to make the split, we look at the Gini index. The Gini index is defined as: \[G = \sum_{k=1}^{K} \hat{p}_{mk} (1-\hat{p}_{mk})\] where $\hat{p}_{mk}$ is the proportion of training observations in the m\textsuperscript{th} region from the k\textsuperscript{th} class. This equation measures the variance across the K classes. From this equation we can see that if the $\hat{p}_{mk}$'s are close to zero or one, the Gini index will be small. When the Gini index is small, it means the node is pure and contains mostly observations from a single class.  
+
+To prune the classification tree, the tree should first be fully grown. You can then look at the complexity parameter (cp) to decide where to best prune the tree. To decide the proper cp to use, we follow the one SE rule. We pick tree with the fewest nodes (biggest cp) possible based on if the error rate for the small tree is within one SE from the lowest error rate.  
+
+## Random Forests
+Random forests is a machine learning technique similar to bagging, but with a chance that decorrelates the trees [@RF, pp. 5]. In bagging, a large number of trees are built using bootstrapped training samples. The trees in bagging are completed using all possible predictors for all of the trees, which leads to strong correlation between the trees. In random forests, each time a split is considered, a random sample of m predictors is chosen from all possible predictors p. When using random forests with classification, the default number of predictors m is to use $m \approx \sqrt{p}$. At each split a new sample of m is sampled.  
+
+For our adult dataset four out of the fourteen predictors will be considered at each split. This means that more of our predictors are left out at each decision point than left in.
+  
+The algorithm for random forests follows:  
+
+\begin{enumerate}
+  \item A sample of size N is taken from the dataset with replacement. The sample that is taken is used as our training dataset.
+  \item If there are M input variables, m is chosen to be  ${m<<M}$ (For classification, the default m is chosen to be $m \approx \sqrt{p}$). m is then the number of random variables that are chosen from M at each node. The best split is chosen from m and used to split the node. The value of m is held constant throughout the entire forest.
+  \item There is no pruning of the trees. The trees are grown to the largest possible trees.
+  \item Make $n_{tree}$ number of trees for the forest.
+  \item For classification predictions, we use majority votes for the aggregated predictions of the $n_{tree}$ trees.
+  \item We can calculate the out-of-bag error rate by predicting the data that is not in the bootstrap sample, using the tree grown from the bootstrap sample.
+\end{enumerate}
+  
+## Types of Missingness
+Many datasets contain missing data. There are four main missingness mechanisms [@arm, pp. 530]. The four we cover are missingness completely at random (MCAR), missingness at random (MAR), missingness that depends on unobserved predictors, and missingness that depends on the variable itself.  
+
+### Missingness Completely at Random
+If each observation in a variable have the same probability of missingness, then the variable is said to be missing completely at random. For example, with our adult dataset, if each respondent decides whether to answer the occupation question by flipping a coin and not answering if a heads shows up, this would be considered missing completely at random. If data are missing completely at random, then not including cases with the missing data will not bias the inference.
+  
+### Missingness at Random  
+Most missingness is not completely at random. Often there are different factors that go into whether or not someone responds. One possible example, which includes our adult dataset, shows the different non-response rates for different ethnicities. The table below shows the non-response rates for missing data in the work and occupation variables of the adult dataset based on race.  
+
+```{r, cache = TRUE, echo = FALSE}
+library(scales)
+adult <- read.csv('/Users/joshyoung/Documents/GradProj/adult.csv', header=FALSE)
+colnames(adult) <- c('age', 'work', 'fnl', 'education', 'edNum', 'marital',
+                     'occupation', 'relationship', 'race', 'sex', 'capGain',
+                     'capLoss', 'HourPW', 'nativeCountry', 'class')
+adult[adult == " ?"] = NA
+race <- adult[!complete.cases(adult),]
+race <- race[, c(2, 7, 9)]
+tablecount <- table(race$race)
+tablecountAd <- table(adult$race)
+nrRate <- vector('numeric', length = 5)
+for(i in 1:5){
+  nrRate[i] <- round(tablecount[[i]] / tablecountAd[[i]], 4)
+}
+nrRateTable <- matrix(percent(nrRate))
+rownames(nrRateTable) <- c('Amer-Indian-Eskimo', 'Asian-Pac-Islander', 'Black', 'Other', 'White')
+kable(nrRateTable, format = 'latex')
+```
+  
+This table shows that there is a higher non-response rate for "Asian Pacific Islanders" and "Other" than for the remaining races. These rates show that these data do not have missingness completely at random.  
+
+A variable is said to be missing at random if the probability depends only on available information. For the adult dataset, if work, education number, marital and the other variables are recorded for all people in the dataset, then occupation would be missing at random if the probability of non-response depended fully on the other recorded variables. Often, this is modeled as a logistic regression, with the outcome variable set as a one for observed cases and a zero for missing cases.  
+
+If the regression ran controls all variables in the dataset that affect the probability of missingness in the outcome variable, it is acceptable to exclude missing observations. In R we treat the missing observations as NA.  
+
+### Missingness that Depends on Unobserved Predictors
+If information has not been collected in the dataset, and this information affects the probability of missingness in the outcome variable, the outcome variable in no longer missing at random. For example, lets assume in our adult dataset that the probability of missingness in the occupation variable was affected by type of work. Type of work is not a variable in our dataset, so occupation would not be missing at random.  
+
+For datasets that contain missingness that is not at random, it must be modeled. If not exactly modeled, then you must accept bias in the results.  
+
+### Missingness that Depends on the Variable Itself
+The most difficult type of missingness occurs when the probability of missingness depends on the actual missing value. An example of this situation would be if the missingness depending on the the occupation from the adult dataset depended on the occupation. If the people responding feel embarrassed about their jobs and chose not to answer the question, this would affect the probability of missingness for the occupation variable. The name for this situation is censoring, where the respondant censors their own responses, resulting in missingness in the data.
+
+# Methods
+
+## Imputation within Random Forests
+Random forests has two built in imputation methods to deal with missing values. The one method uses the "rough and ready" roughfix method (na.roughfix), and the other method uses the proximity matrix to impute values.  
+
+### na.roughfix
+The first approach in random forests is na.roughfix. This approach was called "rough and ready" by Leo Breiman. This method works one of two ways. If the variable being imputed is numeric, the median value is chosen as the imputed value. If the variable being imputed is categorical, then the most common class is chosen as the imputed value. Thus the nickname "rough and ready". This method was constantly the fastest of all methods by a considerable margin.  
+
+### Proximity Matrix 
+When using the proximity matrix for imputation, the dataset with missing values is first imputed using na.roughfix. Random forests is then run with the imputed dataset. Using the proximity matrix, the missing values are then imputed for the missing data. For continuous variables, the values are imputed using the weighted average among non-missing values. Categorical variables are imputed using the category with the largest average proximity.
+  
+## MICE
+
+The MICE package in R contains popular methods for imputation. MICE stands for multivariate imputation by chained equations. The way MICE works is by specifying the imputation model on a variable basis to a set of conditional densities [@MICE, pp.2]. The imputations are made through iterating over the conditional densities.
+
+There are many different methods for different situations with the MICE algorithm. The two methods used in this paper are PMM (predictive mean matching), and rf (random forest imputations). PMM is the most commonly used method for the mice algorithm. The reason PMM is so widely used is because it can be used for any type of data (not just numeric). I also wanted to test compare MICE's version for random forest imputations, so I used the random forest method as well to compare.
+
+## New Method For Imputation
+There are two new methods we made that we will discuss in this paper. They are both similar in their process, but with a change in how the missing data is originally filled. The first method we worked on begins by filling in all missing data with a random value that is found within the variable. We mark which columns contain missing values, so we can know which variable to predict for in our algorithm. Now we have a full dataset with no missing values. The response variable is temporarily taken out, so our variables are only the predictors.  
+  
+Once you have a complete dataset with only predictors, the algorithm for our new methods go as follows.
+\begin{enumerate}
+  \item Set a variable that contains at least one missing value as the response variable.
+  \item Run Random Forests to find predictions for the response variable which has missing values.
+  \item Fill in the missing values with the predicted values from random forests.
+\end{enumerate}
+
+These steps are performed for all variable's that contain missingness.  
+
+The difference with our second method is that instead of putting in a random value to complete our dataset, we fill the dataset by using the na.roughfix method from above. This will fill our dataset with the median value (if numeric), or the most common value (if categorical). Throughout the results the two methods will be differentiated as new/rand and new/rough where new/rand has the data randomly filled, and new/rough used na.roughfix to complete the dataset.  
+  
+# Results  
+For our results, we compare the accuracy of six different imputation methods. The six methods we used are; (1) New method with na.roughfix (New/Rough), (2) New method with random imputation, (3) random forest's na.roughfix (Rough), (4) random forests's proximity matrix (Prox), (5) MICE with random forests (Mice/For), and (6) MICE with PMM (Mice/PMM). To make comparisons we complete the datasets using each of the methods, then run random forests on the completed dataset. We then find the percent correctly classified for each method.  
+
+Our datasets are found on the UCI repository. We have two types of datasets. Datasets that already contain missing values (missing at random), and datasets where we introduce the missingness at random (missing completely at random). For datasets that are missing at random (MAR), we run random forests on the imputed dataset and obtain the out-of-bag error rate. We then subtract the out-of-bag error rate from 1 to get the percent correctly classified (PCC).
+
+The first results come from datasets that are MAR. Each method was run on each dataset with 100 reps. The PCC shown on the table is the mean PCC from the 100 reps. Table 1 gives the percent correctly classified for each of the 6 methods. The bold number is the most accurate method for each dataset. Table 2 ranks each method by prediction accuracy. Mean rank in table 1 is the average rank for all 5 methods.
+\small
+```{r, echo = FALSE}
+# read in the data
+adult <- read.csv('/Users/joshyoung/Documents/GradProj/Imputation/adult3.csv', row.names = 1)
+hep <- read.csv('/Users/joshyoung/Documents/GradProj/Imputation/hep3.csv', row.names = 1)
+horse <- read.csv('/Users/joshyoung/Documents/GradProj/Imputation/horse3.csv', row.names = 1)
+bridge <- read.csv('/Users/joshyoung/Documents/GradProj/Imputation/bridge3.csv', row.names = 1)
+soybean <- read.csv('/Users/joshyoung/Documents/GradProj/Imputation/soybean3.csv', row.names = 1)
+
+adult <- t(adult); hep <- t(hep); horse <- t(horse); bridge <- t(bridge); soybean <- t(soybean)
+
+# make mar table
+mar_table <- rbind(adult, hep, horse, bridge, soybean) %>%
+  `colnames<-`(c('New/Rough', 'New/Rand', 'Rough', 'Prox', 'Mice/For', 'Mice/PMM')) %>%
+  `rownames<-`(c('Adult', 'Hepatitis', 'Horse', 'Bridge', 'Soybean'))
+mar_table <- 1 - mar_table
+mar_table <- round(100 * mar_table, digits = 2)
+mar_table[, c(1:2)] <- mar_table[, c(2:1)]
+
+# get accuracy rankings and add to table
+k <- apply(mar_table, 1, function(x) rank(-x)) %>%
+  t()
+
+ave_bank <- colMeans(k)
+
+mar_table <- rbind(mar_table, round(ave_bank, digits =2)) %>%
+  `colnames<-`(c('New/Rough', 'New/Rand', 'Rough', 'Prox', 'Mice/For', 'Mice/PMM')) %>%
+  `rownames<-`(c('Adult', 'Hepatitis', 'Horse', 'Bridge', 'Soybean', 'Mean Rank'))
+
+# print table with highest PCC bolded
+emphasize.strong.cells(which(k == 1, arr.ind = TRUE))
+pander(mar_table, caption = 'MAR Datasets Percent Correctly Classified', split.table = Inf)
+
+pander(k, caption = "Ranking for Each Method by Dataset")
+```
+  
+These results show that the most accurate method for data MAR is the Mice with PMM method. Our new method where we first impute with na.roughfix is the second most accurate method. This new method with roughfix gives better results for these MAR datasets than the current random forest imputation methods in almost every MAR test.  
+
+The following results are from datasets that are missing completely at random. The datasets we used started complete and we introduced the missingness completely at random. The results show all six methods with six different percentages of data missing. We introduced 10, 20, 30, 40, 50 and 60 percent missingness and tested the methods at these different levels. These tables have the percent correctly classified for each dataset at each level of missingness as well as a graph showing the effect of increased missingness.
+
+Each dataset for the missingness completely at random (MCAR) examples were randomly split into a test set and a training set. PCC was found by first running random forest on the imputed training set and then predicting for the test set. Each method at each level of missingness was repeated 50 times, and the PCC is the mean percentage correctly classified from the 50 repetitions.  
+\small
+```{r, echo = FALSE}
+#read in wine data table
+wineTable <- read.csv('/Users/joshyoung/Documents/GradProj/Imputation/wine4.csv', header = TRUE, row.names = 1) %>%
+  `colnames<-`(c('New/Rough', 'New/Rand', 'Rough', 'Prox', 'Mice/For', 'Mice/PMM')) %>%
+  `rownames<-`(c(10, 20, 30, 40, 50, 60))
+wineTable[, c(1:2)] <- wineTable[, c(2:1)]
+
+#get ranks for ion table
+k <- apply(wineTable, 1, function(x) rank(-x)) %>%
+  t()
+ave_bank <- colMeans(k)
+
+wineTableNew <- rbind(wineTable, round(ave_bank, digits = 4)) %>%
+  `colnames<-`(c('New/Rough', 'New/Rand', 'Rough', 'Prox', 'Mice/For', 'Mice/PMM')) %>%
+  `rownames<-`(c(10, 20, 30, 40, 50, 60, 'Rank'))
+
+#make table
+emphasize.strong.cells(which(k == 1, arr.ind = TRUE))
+pander(wineTableNew, caption = 'Wine Dataset Percent Correctly Classified', split.table = Inf)
+
+pander(k, caption = 'Ranking of Most Accurate Methods Wine Dataset')
+```
+
+```{r, echo = FALSE}
+matplot(rownames(wineTable), wineTable, type = 'b', xlab = "Percent Missing", ylab = "Percent Correctly Classified", main = 'Wine Dataset', pch = 1:6, col = brewer.pal(6, 'Set2'))
+legend('bottom', legend = colnames(wineTable), col = brewer.pal(6, 'Set2'), pch = 1:6, cex = 0.8)
+```
+
+\small
+```{r, echo = FALSE}
+#read in Ion data table
+ionTable <- read.csv('/Users/joshyoung/Documents/GradProj/Imputation/ion3.csv', header = TRUE, row.names = 1) %>%
+  `colnames<-`(c('New/Rough', 'New/Rand', 'Rough', 'Prox', 'Mice/For', 'Mice/PMM')) %>%
+  `rownames<-`(c(10, 20, 30, 40, 50, 60))
+ionTable[, c(1:2)] <- ionTable[, c(2:1)]
+
+#get ranks for ion table
+k <- apply(ionTable, 1, function(x) rank(-x)) %>%
+  t()
+ave_bank <- colMeans(k)
+
+ionTableNew <- rbind(ionTable, round(ave_bank, digits = 4)) %>%
+  `colnames<-`(c('New/Rough', 'New/Rand', 'Rough', 'Prox', 'Mice/For', 'Mice/PMM')) %>%
+  `rownames<-`(c(10, 20, 30, 40, 50, 60, 'Rank'))
+
+#make table
+emphasize.strong.cells(which(k == 1, arr.ind = TRUE))
+pander(ionTableNew, caption = 'Ion Dataset Percent Correctly Classified', split.table = Inf)
+
+pander(k, caption = 'Ranking of most accurate methods Ion dataset')
+```
+
+```{r, echo = FALSE}
+matplot(rownames(ionTable), ionTable, type = 'b', xlab = "Percent Missing", ylab = "Percent Correctly Classified", main = 'Ion Dataset', pch = 1:6, col = brewer.pal(6, 'Set2'))
+legend('bottom', legend = colnames(ionTable), col = brewer.pal(6, 'Set2'), pch = 1:6, cex = 0.8)
+```
+
+\small
+```{r, echo = FALSE}
+glassTable <- read.csv('/Users/joshyoung/Documents/GradProj/Imputation/glass3.csv', header = TRUE, row.names = 1) %>%
+  `colnames<-`(c('New/Rough', 'New/Rand', 'Rough', 'Prox', 'Mice/For', 'Mice/PMM')) %>%
+  `rownames<-`(c(10, 20, 30, 40, 50, 60))
+glassTable[, c(1:2)] <- glassTable[, c(2:1)]
+
+#get ranks for glass table
+k <- apply(glassTable, 1, function(x) rank(-x)) %>%
+  t()
+ave_bank <- colMeans(k)
+
+glassTableNew <- rbind(glassTable, round(ave_bank, digits = 4)) %>%
+  `colnames<-`(c('New/Rough', 'New/Rand', 'Rough', 'Prox', 'Mice/For', 'Mice/PMM')) %>%
+  `rownames<-`(c(10, 20, 30, 40, 50, 60, 'Rank'))
+
+#make table
+emphasize.strong.cells(which(k == 1, arr.ind = TRUE))
+pander(glassTableNew, caption = 'Glass Dataset Percent Correctly Classified', split.table = Inf)
+
+pander(k, caption = 'Ranking of Most Accurate Methods Glass Dataset')
+```
+
+```{r, echo = FALSE}
+matplot(rownames(glassTable), glassTable, type = 'b', xlab = "Percent Missing", ylab = "Percent Correctly Classified", main = 'Glass Dataset', pch = 1:6, col = brewer.pal(6, 'Set2'))
+legend(10, 55, legend = colnames(glassTable), col = brewer.pal(6, 'Set2'), pch = 1:6, cex = 0.8)
+```
+  
+The datasets that are missing completely at random appear to fare differently depending on the dataset. For the Wine dataset, The New/Rand method performed the best out of all 6 methods while New/Rough didn't perform so well. In the ion dataset MICE with PMM was most accurate and the two new methods were middle of the pack. Finally, the Glass dataset had random forest's proximity matrix method performed the best, and the New/Rough method was the third most accurate method.  
+  
+Something that also needs to be taken into consideration when running these methods is the cost. We timed the methods and showed what happened as the observations are increased, and then as the number of columns are increased. The first test had 15 columns then we saw what happened with 50, 100, 200, and 400 observations. The second test had 50 observations and we increased the number of columns from 10 to 20 then to 40. The results show how many milliseconds it takes to run the method. We introduced 20 percent missingness to the dataset.  
+
+\small
+```{r, echo = FALSE, warning=FALSE}
+#read in micro1 data table
+micro_obs <- read.csv('/Users/joshyoung/Documents/micro_500_obs.csv', header = TRUE) %>%
+  `rownames<-`(c('New/Rough', 'New/Rand', 'Rough', 'Prox', 'Mice/For', 'Mice/PMM'))
+micro_obs <- micro_obs[, -1] %>%
+  t() %>%
+  `rownames<-`(c(10, 25,50,100))
+#get ranks for ion table
+k <- apply(micro_obs, 1, function(x) rank(x)) %>%
+  t()
+  
+ave_bank <- colMeans(k)
+
+microTableNew <- rbind(micro_obs, round(ave_bank, digits = 1)) %>%
+  `colnames<-`(c('New/Rough', 'New/Rand', 'Rough', 'Prox', 'Mice/For', 'Mice/PMM')) %>%
+  `rownames<-`(c(10, 25, 50, 100, 'Rank'))
+
+#make table
+emphasize.strong.cells(which(k == 1, arr.ind = TRUE))
+pander(microTableNew, caption = 'Times with Increasing Columns and 500 Observations (ms)', split.table = Inf)
+
+pander(k, caption = 'Ranking of the Fastest Methods Increased Columns with 500 Observations')
+
+matplot(rownames(micro_obs), micro_obs, type = 'b', xlab = "Number of Columns", ylab = "Time (in Milliseconds)", main = 'Times for each method (500 obs.)', pch = 1:6, col = brewer.pal(6, 'Set2'))
+legend('topleft' , legend = colnames(micro_obs), col = brewer.pal(6, 'Set2'), pch = 1:6, cex = 0.8)
+```
+
+\small
+```{r, echo = FALSE, warning=FALSE}
+#read in micro1 data table
+micro_obs <- read.csv('/Users/joshyoung/Documents/bench_50_obs.csv', header = TRUE) %>%
+  `rownames<-`(c('New/Rough', 'New/Rand', 'Rough', 'Prox', 'Mice/For', 'Mice/PMM'))
+micro_obs <- micro_obs[, -1] %>%
+  t() %>%
+  `rownames<-`(c(10, 25,50,100))
+#get ranks for ion table
+k <- apply(micro_obs, 1, function(x) rank(x)) %>%
+  t()
+  
+ave_bank <- colMeans(k)
+
+microTableNew <- rbind(micro_obs, round(ave_bank, digits = 1)) %>%
+  `colnames<-`(c('New/Rough', 'New/Rand', 'Rough', 'Prox', 'Mice/For', 'Mice/PMM')) %>%
+  `rownames<-`(c(10, 25, 50, 100, 'Rank'))
+
+#make table
+emphasize.strong.cells(which(k == 1, arr.ind = TRUE))
+pander(microTableNew, caption = 'Times with Increasing Columns and 50 Observations (ms)', split.table = Inf)
+
+pander(k, caption = 'Ranking of the Fastest Methods Increased Columns with 50 Observations')
+
+matplot(rownames(micro_obs), micro_obs, type = 'b', xlab = "Number of Columns", ylab = "Time (in Milliseconds)", main = 'Times for each method (50 obs.)', pch = 1:6, col = brewer.pal(6, 'Set2'))
+legend('topleft' , legend = colnames(micro_obs), col = brewer.pal(6, 'Set2'), pch = 1:6, cex = 0.8)
+```
+  
+For all the different datasets ran, na.roughfix is the fastest method by a large margin. The proximity method is the second fastest method for all the datasets ran. The other constant for all datasets is that the MICE method with random forest is the slowest method by a large margin. Both of the new methods take about the same amount of time to run at all levels of observations and columns. For a fixed 15 columns, the new methods start going slower as the number of observations increase compared to MICE with PMM. For a fixed 50 observations, MICE with PMM begins to go slower than the new methods with respect to our new methods.  
+
+# Conclusions
+
+# Future Work
+
+\pagebreak
+  
+# References
+
